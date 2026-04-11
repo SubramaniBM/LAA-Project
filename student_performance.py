@@ -91,7 +91,7 @@ class StudentPerformanceAnalyzer:
         X, _, _, _ = la.lstsq(A_known, A_missing)
 
         student_known = student_vector[known_indices]
-        student_missing_pred = student_known @ X
+        student_missing_pred = np.atleast_1d(student_known @ X)
 
         predicted_vector = student_vector.copy()
         for i, m_idx in enumerate(missing_indices):

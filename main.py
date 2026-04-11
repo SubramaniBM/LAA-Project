@@ -24,8 +24,6 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, IntPrompt
 from rich import box
-from rich.columns import Columns
-from rich.text import Text
 
 from student_performance import StudentPerformanceAnalyzer, load_uci_student_data
 import visualizer as viz
@@ -41,6 +39,25 @@ ANALYZER = None
 
 # Cache expensive computations
 CACHE = {}
+
+# Valid ranges for each feature (min, max)
+FEATURE_RANGES = {
+    "age": (15, 22),
+    "Medu": (0, 4),
+    "Fedu": (0, 4),
+    "studytime": (1, 4),
+    "failures": (0, 3),
+    "famrel": (1, 5),
+    "freetime": (1, 5),
+    "goout": (1, 5),
+    "Dalc": (1, 5),
+    "Walc": (1, 5),
+    "health": (1, 5),
+    "absences": (0, 75),
+    "G1": (0, 20),
+    "G2": (0, 20),
+    "G3": (0, 20),
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -119,6 +136,43 @@ def load_data():
     CACHE = {}
 
 
+def safe_int_input(prompt_text, default, min_val, max_val):
+    """Get an integer input with range validation and error handling."""
+    while True:
+        try:
+            val = IntPrompt.ask(prompt_text, default=default)
+            if val < min_val or val > max_val:
+                console.print(f"  [bright_red]Please enter a number between "
+                              f"{min_val} and {max_val}.[/]")
+                continue
+            return val
+        except Exception:
+            console.print(f"  [bright_red]Please enter a valid number.[/]")
+            continue
+
+
+def parse_feature_indices(input_str, num_features):
+    """Parse comma-separated feature indices with validation and deduplication."""
+    indices = []
+    seen = set()
+    for part in input_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            idx = int(part)
+            if idx < 0 or idx >= num_features:
+                console.print(f"  [bright_red]Ignoring {idx} (must be 0-{num_features - 1})[/]")
+            elif idx in seen:
+                console.print(f"  [dim]Ignoring duplicate: {idx}[/]")
+            else:
+                indices.append(idx)
+                seen.add(idx)
+        except ValueError:
+            console.print(f"  [bright_red]Ignoring '{part}' (not a number)[/]")
+    return indices
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  MAIN MENU
 # ══════════════════════════════════════════════════════════════════════════
@@ -169,8 +223,8 @@ def dataset_overview():
     show_feature_menu()
 
     # Ask how many students to view
-    n = IntPrompt.ask("\n  How many students to display?", default=10)
-    n = max(1, min(n, ANALYZER.num_students))
+    n = safe_int_input("\n  How many students to display?", default=10,
+                       min_val=1, max_val=ANALYZER.num_students)
     console.print()
     console.print(matrix_table(DATA[:n, :], row_labels=STUDENT_IDS[:n],
                                col_labels=FEATURES,
@@ -277,8 +331,8 @@ def predict_missing_scores():
 
     console.print("  [bold]Select a student from the dataset:[/]")
     console.print(f"  [dim]Enter a number between 1 and {ANALYZER.num_students}[/]")
-    idx = IntPrompt.ask("  Student #", default=43) - 1
-    idx = max(0, min(idx, ANALYZER.num_students - 1))
+    idx = safe_int_input("  Student #", default=43,
+                         min_val=1, max_val=ANALYZER.num_students) - 1
 
     student = DATA[idx].copy()
     console.print(f"\n  Selected: [bold bright_cyan]{STUDENT_IDS[idx]}[/]")
@@ -299,11 +353,16 @@ def predict_missing_scores():
         "  Feature numbers to predict (comma-separated)",
         default="13,14"
     )
-    missing_idx = [int(x.strip()) for x in missing_input.split(",") if x.strip().isdigit()]
-    missing_idx = [i for i in missing_idx if 0 <= i < ANALYZER.num_features]
+
+    # Parse with validation and deduplication
+    missing_idx = parse_feature_indices(missing_input, ANALYZER.num_features)
 
     if not missing_idx:
-        console.print("  [bright_red]Invalid selection, using G2 and G3[/]")
+        console.print("  [bright_red]No valid features selected. Using G2 and G3 as defaults.[/]")
+        missing_idx = [FEATURES.index("G2"), FEATURES.index("G3")]
+
+    if len(missing_idx) >= ANALYZER.num_features:
+        console.print("  [bright_red]Cannot hide ALL features. Using G2 and G3 instead.[/]")
         missing_idx = [FEATURES.index("G2"), FEATURES.index("G3")]
 
     missing_names = [FEATURES[i] for i in missing_idx]
@@ -380,17 +439,29 @@ def predict_your_grade():
     for i, feat in enumerate(FEATURES):
         label, hint, default = descriptions[feat]
         prompt_text = f"  [{feat}] {label} [dim]({hint})[/]"
-        val = Prompt.ask(prompt_text, default=default if default else "")
-        val = val.strip()
-        if val == "" or val.lower() in ("skip", "?", "predict"):
-            missing_idx.append(i)
-            console.print(f"    [dim]-> will be predicted[/]")
-        else:
-            try:
-                user_vector[i] = float(val)
-            except ValueError:
+
+        while True:
+            val = Prompt.ask(prompt_text, default=default if default else "")
+            val = val.strip()
+
+            if val == "" or val.lower() in ("skip", "?", "predict"):
                 missing_idx.append(i)
-                console.print(f"    [dim]-> invalid input, will be predicted[/]")
+                console.print(f"    [dim]-> will be predicted[/]")
+                break
+
+            try:
+                num = float(val)
+                lo, hi = FEATURE_RANGES[feat]
+                if num < lo or num > hi:
+                    console.print(f"    [bright_red]Out of range! {feat} must be "
+                                  f"between {lo} and {hi}. Try again.[/]")
+                    continue
+                user_vector[i] = num
+                break
+            except ValueError:
+                console.print(f"    [bright_red]'{val}' is not a valid number. "
+                              f"Enter a number or press Enter to skip.[/]")
+                continue
 
     if not missing_idx:
         console.print("\n  [bright_yellow]You filled in everything! Nothing to predict.[/]")
@@ -492,8 +563,8 @@ def least_squares_modeling():
 
     console.print("  [bold]Choose a target feature to model:[/]")
     show_feature_menu()
-    target_idx = IntPrompt.ask("  Target feature #", default=FEATURES.index("G3"))
-    target_idx = max(0, min(target_idx, ANALYZER.num_features - 1))
+    target_idx = safe_int_input("  Target feature #", default=FEATURES.index("G3"),
+                                min_val=0, max_val=ANALYZER.num_features - 1)
 
     console.print(f"\n  Modeling [bold bright_magenta]{FEATURES[target_idx]}[/] "
                   f"= f(all other features)\n")
@@ -607,10 +678,15 @@ def student_lookup():
     console.print("  [bold]Enter two student numbers to compare side-by-side:[/]")
     console.print(f"  [dim]Range: 1 to {ANALYZER.num_students}[/]\n")
 
-    idx_a = IntPrompt.ask("  Student A #", default=1) - 1
-    idx_b = IntPrompt.ask("  Student B #", default=100) - 1
-    idx_a = max(0, min(idx_a, ANALYZER.num_students - 1))
-    idx_b = max(0, min(idx_b, ANALYZER.num_students - 1))
+    idx_a = safe_int_input("  Student A #", default=1,
+                           min_val=1, max_val=ANALYZER.num_students) - 1
+    idx_b = safe_int_input("  Student B #", default=100,
+                           min_val=1, max_val=ANALYZER.num_students) - 1
+
+    if idx_a == idx_b:
+        console.print(f"\n  [bright_yellow]Note: You selected the same student "
+                      f"({STUDENT_IDS[idx_a]}) for both. "
+                      f"Similarity will be perfect.[/]")
 
     student_a = DATA[idx_a]
     student_b = DATA[idx_b]
@@ -635,11 +711,15 @@ def student_lookup():
     console.print(cmp_table)
 
     # Similarity metrics
-    # Euclidean distance
     euclidean = np.linalg.norm(student_a - student_b)
 
-    # Cosine similarity
-    cos_sim = np.dot(student_a, student_b) / (np.linalg.norm(student_a) * np.linalg.norm(student_b))
+    # Cosine similarity (guard against zero vectors)
+    norm_a = np.linalg.norm(student_a)
+    norm_b = np.linalg.norm(student_b)
+    if norm_a > 0 and norm_b > 0:
+        cos_sim = np.dot(student_a, student_b) / (norm_a * norm_b)
+    else:
+        cos_sim = 0.0
 
     # PCA projection comparison
     eigenvalues, eigenvectors, var_ratio, proj_2d, _ = ANALYZER.discover_hidden_patterns()
@@ -675,17 +755,12 @@ def generate_all_charts():
 
     console.print("  [dim]Saving 7 publication-quality charts to plots/ ...[/]\n")
 
-    # Grade distributions
-    console.print("  [1/7] Grade distributions...", end=" ")
-    p = viz.plot_grade_distributions(DF)
-    console.print(f"[bright_green]OK[/] -> {p}")
+    charts = [
+        ("Grade distributions", lambda: viz.plot_grade_distributions(DF)),
+        ("Correlation heatmap", lambda: viz.plot_correlation_heatmap(DATA, FEATURES)),
+    ]
 
-    # Correlation heatmap
-    console.print("  [2/7] Correlation heatmap...", end=" ")
-    p = viz.plot_correlation_heatmap(DATA, FEATURES)
-    console.print(f"[bright_green]OK[/] -> {p}")
-
-    # PCA
+    # PCA-dependent charts need eigendata
     eigenvalues, eigenvectors, var_ratio, proj_2d, _ = ANALYZER.discover_hidden_patterns()
     grade_labels = []
     for g in DF["G3"]:
@@ -698,26 +773,18 @@ def generate_all_charts():
         else:
             grade_labels.append("Fail (0-9)")
 
-    console.print("  [3/7] PCA scatter...", end=" ")
-    p = viz.plot_pca_scatter(proj_2d, grade_labels, var_ratio)
-    console.print(f"[bright_green]OK[/] -> {p}")
+    charts += [
+        ("PCA scatter", lambda: viz.plot_pca_scatter(proj_2d, grade_labels, var_ratio)),
+        ("Eigenvalue spectrum", lambda: viz.plot_eigenvalue_spectrum(eigenvalues, var_ratio)),
+        ("PCA feature importance", lambda: viz.plot_pca_feature_importance(eigenvectors, FEATURES)),
+    ]
 
-    console.print("  [4/7] Eigenvalue spectrum...", end=" ")
-    p = viz.plot_eigenvalue_spectrum(eigenvalues, var_ratio)
-    console.print(f"[bright_green]OK[/] -> {p}")
-
-    console.print("  [5/7] PCA feature importance...", end=" ")
-    p = viz.plot_pca_feature_importance(eigenvectors, FEATURES)
-    console.print(f"[bright_green]OK[/] -> {p}")
-
-    # LSE
+    # LSE chart
     target_idx = FEATURES.index("G3")
     coeffs, predictors, _, _, r_sq = ANALYZER.model_performance_trend(target_idx)
     predictor_names = [FEATURES[i] for i in predictors]
-
-    console.print("  [6/7] LSE coefficients...", end=" ")
-    p = viz.plot_lse_coefficients(coeffs, predictor_names, "G3", r_sq)
-    console.print(f"[bright_green]OK[/] -> {p}")
+    charts.append(("LSE coefficients",
+                    lambda: viz.plot_lse_coefficients(coeffs, predictor_names, "G3", r_sq)))
 
     # Prediction comparison
     test_student = DATA[42].copy()
@@ -726,13 +793,20 @@ def generate_all_charts():
     for i in missing_idx:
         student_missing[i] = np.nan
     predicted = ANALYZER.predict_missing_scores(student_missing, missing_idx)
+    charts.append(("Prediction comparison",
+                    lambda: viz.plot_prediction_comparison(student_missing, predicted, FEATURES)))
 
-    console.print("  [7/7] Prediction comparison...", end=" ")
-    p = viz.plot_prediction_comparison(student_missing, predicted, FEATURES)
-    console.print(f"[bright_green]OK[/] -> {p}")
+    # Generate each chart with error handling
+    for i, (name, chart_fn) in enumerate(charts):
+        console.print(f"  [{i+1}/{len(charts)}] {name}...", end=" ")
+        try:
+            p = chart_fn()
+            console.print(f"[bright_green]OK[/] -> {p}")
+        except Exception as e:
+            console.print(f"[bright_red]FAILED[/] ({e})")
 
     console.print(Panel(
-        "[bold bright_green]All 7 charts saved to plots/[/]",
+        "[bold bright_green]All charts saved to plots/[/]",
         border_style="bright_green", box=box.ROUNDED
     ))
     pause()
@@ -754,39 +828,78 @@ def main():
         padding=(1, 4)
     ))
 
-    # Load data
+    # Load data with error handling
     console.print("\n  [dim]Loading dataset...[/]", end=" ")
-    load_data()
-    console.print(f"[bright_green]OK[/] ({ANALYZER.num_students} students loaded)\n")
+    try:
+        load_data()
+        console.print(f"[bright_green]OK[/] ({ANALYZER.num_students} students loaded)\n")
+    except FileNotFoundError:
+        console.print("[bright_red]FAILED[/]")
+        console.print(Panel(
+            "[bright_red]Dataset file not found![/]\n\n"
+            "Please download the UCI Student Performance dataset:\n"
+            "  1. Go to: [underline]https://archive.ics.uci.edu/dataset/320[/]\n"
+            "  2. Download the ZIP file\n"
+            "  3. Extract [bold]student-mat.csv[/] into a [bold]data/[/] folder\n\n"
+            "Expected path: [bold]data/student-mat.csv[/]",
+            border_style="bright_red", box=box.ROUNDED,
+            title="[bold]Missing Dataset[/]"
+        ))
+        return
+    except Exception as e:
+        console.print("[bright_red]FAILED[/]")
+        console.print(f"  [bright_red]Error: {e}[/]")
+        return
 
     # Main loop
     while True:
-        show_main_menu()
+        try:
+            show_main_menu()
 
-        choice = Prompt.ask("\n  [bold bright_cyan]>[/] Choose an option", default="0")
-        choice = choice.strip()
+            choice = Prompt.ask("\n  [bold bright_cyan]>[/] Choose an option [dim](1-8, 0 to exit)[/]",
+                                default="")
+            choice = choice.strip()
 
-        if choice == "1":
-            dataset_overview()
-        elif choice == "2":
-            full_analysis_pipeline()
-        elif choice == "3":
-            predict_missing_scores()
-        elif choice == "4":
-            predict_your_grade()
-        elif choice == "5":
-            least_squares_modeling()
-        elif choice == "6":
-            pca_analysis()
-        elif choice == "7":
-            student_lookup()
-        elif choice == "8":
-            generate_all_charts()
-        elif choice == "0":
-            console.print("\n  [dim]Goodbye![/]\n")
-            break
-        else:
-            console.print("  [bright_red]Invalid option. Try 0-8.[/]")
+            if choice == "":
+                console.print("  [dim]Please enter a number (1-8) or 0 to exit.[/]")
+                continue
+
+            if choice == "1":
+                dataset_overview()
+            elif choice == "2":
+                full_analysis_pipeline()
+            elif choice == "3":
+                predict_missing_scores()
+            elif choice == "4":
+                predict_your_grade()
+            elif choice == "5":
+                least_squares_modeling()
+            elif choice == "6":
+                pca_analysis()
+            elif choice == "7":
+                student_lookup()
+            elif choice == "8":
+                generate_all_charts()
+            elif choice == "0":
+                console.print("\n  [dim]Goodbye![/]\n")
+                break
+            else:
+                console.print(f"  [bright_red]'{choice}' is not a valid option. "
+                              f"Please enter a number between 0 and 8.[/]")
+
+        except KeyboardInterrupt:
+            console.print("\n\n  [dim]Interrupted. Returning to menu...[/]")
+            console.print("  [dim]Press Ctrl+C again or type 0 to exit.[/]")
+            try:
+                Prompt.ask("  [dim]Press Enter to continue[/]", default="")
+            except KeyboardInterrupt:
+                console.print("\n\n  [dim]Goodbye![/]\n")
+                break
+
+        except Exception as e:
+            console.print(f"\n  [bright_red]An error occurred: {e}[/]")
+            console.print("  [dim]Returning to main menu...[/]")
+            pause()
 
 
 if __name__ == "__main__":
