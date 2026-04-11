@@ -1,133 +1,221 @@
+"""
+Student Academic Performance Analyzer
+======================================
+A linear algebra pipeline for analyzing, reducing, and predicting student 
+academic performance using matrix decomposition techniques.
+
+Uses: NumPy, SciPy, SymPy, Pandas
+"""
+
 import numpy as np
+import pandas as pd
 import scipy.linalg as la
 import sympy as sp
+import os
+
 
 class StudentPerformanceAnalyzer:
-    def __init__(self, data: np.ndarray, subjects: list = None):
-        """
-        Initialize the analyzer with a dataset of student scores.
-        data: 2D numpy array where rows are students and columns are subjects.
-        subjects: List of subject names (optional).
-        """
+    """
+    Encapsulates a dataset of student scores and provides methods to perform
+    various linear algebra techniques for analysis and prediction.
+    """
+
+    def __init__(self, data: np.ndarray, feature_names: list = None, student_ids: list = None):
         self.data = np.array(data, dtype=float)
-        self.num_students, self.num_subjects = self.data.shape
-        self.subjects = subjects if subjects else [f"Subject_{i+1}" for i in range(self.num_subjects)]
-    
+        self.num_students, self.num_features = self.data.shape
+        self.feature_names = feature_names or [f"Feature_{i+1}" for i in range(self.num_features)]
+        self.student_ids = student_ids or [f"Student_{i+1}" for i in range(self.num_students)]
+
+    # -- 1. RREF -----------------------------------------------------------
     def get_rref(self):
-        """
-        Compute the Reduced Row Echelon Form (RREF) of the data matrix.
-        Returns the RREF matrix and the indices of the pivot columns.
-        """
+        """Compute RREF of the data matrix. Returns (rref_matrix, pivot_columns)."""
         sympy_matrix = sp.Matrix(self.data)
         rref_matrix, pivot_columns = sympy_matrix.rref()
-        # Convert sympy objects back to numpy float array
         rref_numpy = np.array(rref_matrix.tolist(), dtype=float)
         return rref_numpy, list(pivot_columns)
-    
+
+    # -- 2. LU Decomposition -----------------------------------------------
     def get_lu_decomposition(self):
-        """
-        Compute the LU decomposition of the dataset.
-        Returns P, L, U matrices such that P @ L @ U = data.
-        """
+        """PA = LU decomposition. Returns (P, L, U)."""
         P, L, U = la.lu(self.data)
         return P, L, U
 
+    def verify_lu(self, P, L, U):
+        """Verify that P @ L @ U reconstructs the original data."""
+        reconstructed = P @ L @ U
+        error = np.linalg.norm(self.data - reconstructed)
+        return error < 1e-8, error
+
+    # -- 3. Rank & Nullity -------------------------------------------------
     def get_rank_and_nullity(self):
-        """
-        Analyze the rank and nullity to understand the linear independence 
-        of the subjects (columns).
-        Returns rank, nullity.
-        """
+        """Returns (rank, nullity). Nullity = num_features - rank."""
         rank = np.linalg.matrix_rank(self.data)
-        nullity = self.num_subjects - rank
+        nullity = self.num_features - rank
         return rank, nullity
-        
+
+    # -- 4. Basis Selection ------------------------------------------------
     def get_basis(self):
-        """
-        Select a basis for the column space (non-redundant subjects) based on RREF pivot columns.
-        Returns a matrix whose columns form a basis.
-        """
+        """Extract a basis for the column space using RREF pivot columns."""
         _, pivot_cols = self.get_rref()
         basis = self.data[:, pivot_cols]
-        basis_subjects = [self.subjects[i] for i in pivot_cols]
-        return basis, basis_subjects
+        basis_features = [self.feature_names[i] for i in pivot_cols]
+        redundant_features = [self.feature_names[i] for i in range(self.num_features) if i not in pivot_cols]
+        return basis, basis_features, redundant_features
 
+    # -- 5. Gram-Schmidt / QR -----------------------------------------------
     def get_orthogonal_basis(self):
-        """
-        Apply Gram-Schmidt orthogonalization to form an orthogonal subject basis
-        from the pivot columns.
-        Returns an orthogonal basis matrix Q.
-        """
-        basis, _ = self.get_basis()
-        # Using QR decomposition which effectively implements Gram-Schmidt
-        # Q contains the orthonormal column vectors
+        """Apply Gram-Schmidt (via QR) to the basis columns. Returns (Q, R)."""
+        basis, _, _ = self.get_basis()
         Q, R = la.qr(basis, mode='economic')
-        return Q
+        return Q, R
 
-    def predict_missing_scores_projection(self, student_vector, missing_indices):
+    def verify_orthogonality(self, Q):
+        """Verify Q^T @ Q is approximately I."""
+        product = Q.T @ Q
+        identity = np.eye(Q.shape[1])
+        error = np.linalg.norm(product - identity)
+        return error < 1e-8, product, error
+
+    # -- 6. Orthogonal Projection (Missing Score Prediction) ----------------
+    def predict_missing_scores(self, student_vector, missing_indices):
         """
-        Predict missing scores using orthogonal projection onto the subspace 
-        spanned by the known subjects.
-        student_vector: 1D array of scores with np.nan for missing scores.
-        missing_indices: List of indices where the score is missing.
+        Predict missing scores by learning a linear map from known to missing
+        columns using least squares on the existing dataset.
         """
         student_vector = np.array(student_vector, dtype=float)
-        known_indices = [i for i in range(self.num_subjects) if i not in missing_indices]
-        
-        # Submatrix of known features for all students (to form a basis for projection mapping)
+        known_indices = [i for i in range(self.num_features) if i not in missing_indices]
+
         A_known = self.data[:, known_indices]
-        # Target missing features for all students
         A_missing = self.data[:, missing_indices]
-        
-        # Find linear mapping (X) from known features to missing features using least squares
-        # A_known @ X \approx A_missing
-        X, residuals, rank, s = la.lstsq(A_known, A_missing)
-        
-        # Project current student's known scores to estimate the missing ones
+
+        X, _, _, _ = la.lstsq(A_known, A_missing)
+
         student_known = student_vector[known_indices]
         student_missing_pred = student_known @ X
-        
+
         predicted_vector = student_vector.copy()
         for i, m_idx in enumerate(missing_indices):
             predicted_vector[m_idx] = student_missing_pred[i]
-            
+
         return predicted_vector
 
-    def model_performance_trend(self, target_subject_idx):
+    # -- 7. Least Squares Estimation ----------------------------------------
+    def model_performance_trend(self, target_feature_idx):
         """
-        Use least squares estimation to model performance trends, e.g., predicting
-        one specific subject as a linear combination of the other subjects based 
-        on the dataset.
-        Returns the coefficients of the model (intercept + weights).
+        Model one feature as a linear combination of the others via LSE.
+        Returns (coefficients, predictor_indices, predictions, residuals, r_squared).
         """
-        predictor_indices = [i for i in range(self.num_subjects) if i != target_subject_idx]
+        predictor_indices = [i for i in range(self.num_features) if i != target_feature_idx]
         X = self.data[:, predictor_indices]
-        y = self.data[:, target_subject_idx]
-        
-        # Add a column of ones for the intercept
-        X_with_intercept = np.hstack([np.ones((self.num_students, 1)), X])
-        
-        coeffs, residuals, rank, s = la.lstsq(X_with_intercept, y)
-        return coeffs, predictor_indices
+        y = self.data[:, target_feature_idx]
 
+        X_with_intercept = np.hstack([np.ones((self.num_students, 1)), X])
+        coeffs, _, _, _ = la.lstsq(X_with_intercept, y)
+
+        predictions = X_with_intercept @ coeffs
+        residuals = y - predictions
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((y - np.mean(y))**2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        return coeffs, predictor_indices, predictions, residuals, r_squared
+
+    # -- 8. Eigenvalue Decomposition / PCA ----------------------------------
     def discover_hidden_patterns(self):
         """
-        Use Eigenvalue decomposition and diagonalization of the covariance matrix
-        to discover hidden performance patterns (like PCA).
-        Returns eigenvalues (variance explained) and eigenvectors (the patterns/factors).
+        Eigenvalue decomposition of the covariance matrix to discover 
+        principal performance factors.
         """
-        # Center the data
         centered_data = self.data - np.mean(self.data, axis=0)
-        
-        # Compute covariance matrix (Subject x Subject)
         cov_matrix = np.cov(centered_data, rowvar=False)
-        
-        # Eigenvalue decomposition for symmetric matrices
+
         eigenvalues, eigenvectors = la.eigh(cov_matrix)
-        
-        # Sort in descending order of eigenvalue
-        sorted_indices = np.argsort(eigenvalues)[::-1]
-        eigenvalues = eigenvalues[sorted_indices]
-        eigenvectors = eigenvectors[:, sorted_indices]
-        
-        return eigenvalues, eigenvectors
+
+        # Sort descending
+        sorted_idx = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sorted_idx]
+        eigenvectors = eigenvectors[:, sorted_idx]
+
+        # Variance explained ratio
+        total_variance = np.sum(np.maximum(eigenvalues, 0))
+        if total_variance > 0:
+            variance_ratio = np.maximum(eigenvalues, 0) / total_variance
+        else:
+            variance_ratio = np.zeros_like(eigenvalues)
+
+        # Project data onto top 2 principal components for 2D visualization
+        top2 = eigenvectors[:, :2]
+        projected_2d = centered_data @ top2
+
+        return eigenvalues, eigenvectors, variance_ratio, projected_2d, cov_matrix
+
+    # -- 9. Diagonalization -------------------------------------------------
+    def diagonalize_covariance(self):
+        """
+        Diagonalize the covariance matrix: C = P D P^(-1).
+        Returns (P, D, P_inv, is_diagonalizable).
+        """
+        centered = self.data - np.mean(self.data, axis=0)
+        cov_matrix = np.cov(centered, rowvar=False)
+        eigenvalues, P = la.eigh(cov_matrix)
+
+        D = np.diag(eigenvalues)
+        P_inv = np.linalg.inv(P)
+
+        reconstructed = P @ D @ P_inv
+        is_valid = np.allclose(cov_matrix, reconstructed, atol=1e-6)
+
+        return P, D, P_inv, is_valid
+
+
+def load_uci_student_data(filepath="data/student-mat.csv"):
+    """
+    Load the UCI Student Performance dataset and extract numeric features
+    relevant for linear algebra analysis.
+    
+    Dataset: https://archive.ics.uci.edu/dataset/320/student+performance
+    Source: P. Cortez and A. Silva (2008). "Using Data Mining to Predict 
+            Secondary School Student Performance."
+    
+    395 students, 33 attributes from two Portuguese schools.
+    
+    We select the following numeric features for our score matrix:
+      - age: Student age
+      - Medu: Mother's education (0-4)
+      - Fedu: Father's education (0-4)
+      - studytime: Weekly study time (1-4)
+      - failures: Number of past class failures (0-3)
+      - famrel: Quality of family relationships (1-5)
+      - freetime: Free time after school (1-5)
+      - goout: Going out with friends (1-5)
+      - Dalc: Workday alcohol consumption (1-5)
+      - Walc: Weekend alcohol consumption (1-5)
+      - health: Current health status (1-5)
+      - absences: Number of school absences
+      - G1: First period grade (0-20)
+      - G2: Second period grade (0-20)
+      - G3: Final grade (0-20)
+    
+    Returns (data_array, feature_names, student_ids, df).
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(
+            f"Dataset not found at '{filepath}'.\n"
+            "Download it from: https://archive.ics.uci.edu/dataset/320/student+performance\n"
+            "Place the CSV file at: data/student-mat.csv"
+        )
+    
+    df = pd.read_csv(filepath)
+    
+    # Select numeric features meaningful for analysis
+    numeric_features = [
+        "age", "Medu", "Fedu", "studytime", "failures",
+        "famrel", "freetime", "goout", "Dalc", "Walc",
+        "health", "absences", "G1", "G2", "G3"
+    ]
+    
+    df_numeric = df[numeric_features]
+    data_array = df_numeric.values.astype(float)
+    student_ids = [f"S{i+1}" for i in range(len(df))]
+    
+    return data_array, numeric_features, student_ids, df
