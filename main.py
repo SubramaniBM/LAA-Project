@@ -392,7 +392,12 @@ def predict_missing_scores():
     console.print(pred_table)
 
     avg_err = sum(abs(predicted[i] - actual_values[i]) for i in missing_idx) / len(missing_idx)
-    console.print(f"  Average prediction error: [bold bright_cyan]{avg_err:.2f}[/] points (out of 20)")
+    
+    missing_features = [FEATURES[i] for i in missing_idx]
+    max_vals = set(FEATURE_RANGES[f][1] for f in missing_features)
+    scale_text = f" (out of {list(max_vals)[0]})" if len(max_vals) == 1 else ""
+    
+    console.print(f"  Average prediction error: [bold bright_cyan]{avg_err:.2f}[/] units{scale_text}")
 
     p = viz.plot_prediction_comparison(student_with_missing, predicted, student, FEATURES)
     console.print(f"  [dim]>> Chart saved -> [underline]{p}[/][/]")
