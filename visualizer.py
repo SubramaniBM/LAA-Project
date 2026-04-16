@@ -161,29 +161,41 @@ def plot_lse_coefficients(coeffs, predictor_names, target_name, r_squared, filen
 
 
 # -- 5. Missing Score Prediction Visual ------------------------------------
-def plot_prediction_comparison(original, predicted, feature_names, filename="prediction_comparison.png"):
-    """Side-by-side comparison of known vs predicted scores."""
+def plot_prediction_comparison(original, predicted, true_values, feature_names, filename="prediction_comparison.png"):
+    """Side-by-side comparison of known vs predicted scores, including actuals for hidden."""
     _ensure_output_dir()
     fig, ax = plt.subplots(figsize=(12, 6))
 
     x = np.arange(len(feature_names))
-    width = 0.35
+    width = 0.28
 
     known_mask = ~np.isnan(original)
     known_vals = np.where(known_mask, original, 0)
-    pred_vals = predicted.copy()
+    
+    # Truth values isolated to only the missing columns
+    actual_hidden_vals = np.where(~known_mask, true_values, 0)
 
-    ax.bar(x - width/2, known_vals, width, label="Known Scores",
+    ax.bar(x - width, known_vals, width, label="Known Scores",
            color="#58a6ff", edgecolor="#30363d", alpha=0.85)
-    bars2 = ax.bar(x + width/2, pred_vals, width, label="Predicted Scores",
+           
+    bars2 = ax.bar(x, predicted, width, label="Predicted Scores",
                    color="#3fb950", edgecolor="#30363d", alpha=0.85)
+                   
+    bars3 = ax.bar(x + width, actual_hidden_vals, width, label="Actual / Truth",
+                   color="#bc8cff", edgecolor="#30363d", alpha=0.85)
 
     for i, is_known in enumerate(known_mask):
         if not is_known:
+            # Highlight Predicted
             bars2[i].set_edgecolor("#f0883e")
             bars2[i].set_linewidth(2.5)
-            ax.annotate("PREDICTED", (x[i] + width/2, pred_vals[i] + 0.3),
+            ax.annotate("PREDICTED", (x[i], predicted[i] + 0.3),
                         ha="center", fontsize=7, color="#f0883e", fontweight="bold")
+            # Highlight Actual
+            bars3[i].set_edgecolor("#bc8cff")
+            bars3[i].set_linewidth(2.5)
+            ax.annotate("ACTUAL", (x[i] + width, actual_hidden_vals[i] + 0.3),
+                        ha="center", fontsize=7, color="#bc8cff", fontweight="bold")
 
     ax.set_xlabel("Feature", fontsize=12)
     ax.set_ylabel("Value", fontsize=12)

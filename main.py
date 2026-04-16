@@ -394,7 +394,7 @@ def predict_missing_scores():
     avg_err = sum(abs(predicted[i] - actual_values[i]) for i in missing_idx) / len(missing_idx)
     console.print(f"  Average prediction error: [bold bright_cyan]{avg_err:.2f}[/] points (out of 20)")
 
-    p = viz.plot_prediction_comparison(student_with_missing, predicted, FEATURES)
+    p = viz.plot_prediction_comparison(student_with_missing, predicted, student, FEATURES)
     console.print(f"  [dim]>> Chart saved -> [underline]{p}[/][/]")
     pause()
 
@@ -794,7 +794,7 @@ def generate_all_charts():
         student_missing[i] = np.nan
     predicted = ANALYZER.predict_missing_scores(student_missing, missing_idx)
     charts.append(("Prediction comparison",
-                    lambda: viz.plot_prediction_comparison(student_missing, predicted, FEATURES)))
+                    lambda: viz.plot_prediction_comparison(student_missing, predicted, test_student, FEATURES)))
 
     # Generate each chart with error handling
     for i, (name, chart_fn) in enumerate(charts):
